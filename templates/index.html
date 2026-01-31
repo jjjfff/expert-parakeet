@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel tight">
+  <div class="header-row">
+    <div>
+      <h1>DuckDB Data Loader</h1>
+      <p class="warning">Local-only tool. It can access any path on this machine. Do not expose it on a shared host.</p>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="stack">
+      <h2>Connection</h2>
+      <div class="form-row">
+        <label>Mode</label>
+        <div class="toggle compact">
+          <label><input type="radio" name="mode" value="memory" checked /> Memory</label>
+          <label><input type="radio" name="mode" value="file" /> File</label>
+        </div>
+      </div>
+      <div class="form-row">
+        <label>DuckDB File</label>
+        <input type="text" id="dbPath" placeholder="C:\\data\\my.duckdb" />
+      </div>
+      <div class="form-row">
+        <button id="connectBtn" class="primary">Connect</button>
+        <span id="connectStatus" class="status"></span>
+      </div>
+    </div>
+
+    <div class="stack">
+      <h2>Generate Sample CSV</h2>
+      <div class="form-row">
+        <label>Rows</label>
+        <input type="text" id="sampleRows" value="1000" />
+      </div>
+      <div class="form-row">
+        <label>String Cols</label>
+        <input type="text" id="sampleStringCols" value="2" />
+      </div>
+      <div class="form-row">
+        <label>Double Cols</label>
+        <input type="text" id="sampleDoubleCols" value="3" />
+      </div>
+      <div class="form-row">
+        <label>Distribution</label>
+        <select id="sampleDistribution">
+          <option value="uniform">Uniform (0..1)</option>
+          <option value="normal">Normal (mean 0, std 1)</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <button id="generateBtn" class="primary">Generate CSV</button>
+        <span id="generateStatus" class="status"></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="panel tight">
+  <div class="grid-2">
+    <div class="stack">
+      <h2>Load File</h2>
+      <div class="form-row">
+        <label>File Path</label>
+        <input type="text" id="selectedFile" placeholder="Paste a .csv or .parquet path (local or network)" />
+      </div>
+      <div class="form-row">
+        <label>Table Name</label>
+        <input type="text" id="tableName" placeholder="auto from file name" />
+      </div>
+      <div class="form-row">
+        <button id="loadBtn" class="primary">Load File</button>
+        <span id="loadStatus" class="status"></span>
+      </div>
+    </div>
+
+    <div class="stack">
+      <h2>Tables & Schemas</h2>
+      <div class="form-row">
+        <button id="refreshTablesBtn">Refresh</button>
+        <span id="tablesStatus" class="status"></span>
+      </div>
+      <div id="tablesPanel" class="tables-panel"></div>
+    </div>
+  </div>
+</section>
+
+<section class="panel tight">
+  <h2>Query</h2>
+  <textarea id="sql" rows="6" placeholder="SELECT * FROM my_table;"></textarea>
+  <div class="form-row">
+    <button id="runBtn" class="primary">Run Query</button>
+    <button id="copyBtn">Copy Grid</button>
+    <span class="status" id="queryStatus"></span>
+  </div>
+  <div class="grid" id="resultGrid"></div>
+</section>
+
+<script>
+const selectedFile = document.getElementById('selectedFile');
+const tableName = document.getElementById('tableName');
+const connectBtn = document.getElementById('connectBtn');
+const connectStatus = document.getElementById('connectStatus');
+const loadBtn = document.getElementById('loadBtn');
+const loadStatus = document.getElementById('loadStatus');
+const generateBtn = document.getElementById('generateBtn');
+const generateStatus = document.getElementById('generateStatus');
+const refreshTablesBtn = document.getElementById('refreshTablesBtn');
+const tablesPanel = document.getElementById('tablesPanel');
+const tablesStatus = document.getElementById('tablesStatus');
+
+const runBtn = document.getElementById('runBtn');
+const copyBtn = document.getElementById('copyBtn');
+const sqlBox = document.getElementById('sql');
+const status = document.getElementById('queryStatus');
+const grid = document.getElementById('resultGrid');
+let lastResult = null;
+
+connectBtn.addEventListener('click', async () => {
+  connectStatus.textContent = '';
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+  const dbPath = document.getElementById('dbPath').value.trim();
+  const res = await fetch('/connect', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, db_path: dbPath })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    connectStatus.textContent = 'Connected';
+  } else {
+    connectStatus.textContent = data.error;
+  }
+});
+
+loadBtn.addEventListener('click', async () => {
+  loadStatus.textContent = '';
+  const path = selectedFile.value.trim();
+  const table = tableName.value.trim();
+  const res = await fetch('/load', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, table_name: table })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    loadStatus.textContent = `Loaded as ${data.table}`;
+  } else {
+    loadStatus.textContent = data.error;
+  }
+});
+
+generateBtn.addEventListener('click', async () => {
+  generateStatus.textContent = '';
+  const rows = document.getElementById('sampleRows').value.trim();
+  const stringCols = document.getElementById('sampleStringCols').value.trim();
+  const doubleCols = document.getElementById('sampleDoubleCols').value.trim();
+  const distribution = document.getElementById('sampleDistribution').value;
+  const res = await fetch('/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      rows,
+      string_cols: stringCols,
+      double_cols: doubleCols,
+      distribution
+    })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    selectedFile.value = data.path;
+    generateStatus.textContent = 'Generated sample CSV.';
+  } else {
+    generateStatus.textContent = data.error;
+  }
+});
+
+function renderTables(data) {
+  if (!data.tables || data.tables.length === 0) {
+    tablesPanel.innerHTML = '<p>No tables loaded yet.</p>';
+    return;
+  }
+  const cards = data.tables.map(table => {
+    const schema = data.schemas[table] || [];
+    const rows = schema.map(pair => `<tr><td>${pair[0]}</td><td>${pair[1]}</td></tr>`).join('');
+    return `
+      <div class="table-card compact">
+        <div class="table-header">
+          <strong>${table}</strong>
+        </div>
+        <div class="schema">
+          <table>
+            <thead><tr><th>Column</th><th>Type</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div class="rename">
+          <input type="text" placeholder="New name" data-old="${table}" />
+          <button class="rename-btn" data-old="${table}">Rename</button>
+        </div>
+      </div>
+    `;
+  });
+  tablesPanel.innerHTML = cards.join('');
+  document.querySelectorAll('.rename-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const oldName = btn.dataset.old;
+      const input = btn.parentElement.querySelector('input');
+      const newName = input.value.trim();
+      if (!newName) return;
+      const res = await fetch('/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old: oldName, new: newName })
+      });
+      const result = await res.json();
+      if (result.ok) {
+        fetchTables();
+      } else {
+        tablesStatus.textContent = result.error;
+      }
+    });
+  });
+}
+
+async function fetchTables() {
+  tablesStatus.textContent = '';
+  const res = await fetch('/tables/json');
+  const data = await res.json();
+  if (data.ok) {
+    renderTables(data);
+  } else {
+    tablesStatus.textContent = data.error;
+  }
+}
+
+function renderGrid(result) {
+  if (!result.columns || result.columns.length === 0) {
+    grid.innerHTML = '<p>No results.</p>';
+    return;
+  }
+  const header = `<tr>${result.columns.map(c => `<th>${c}</th>`).join('')}</tr>`;
+  const body = result.rows.map(row => `<tr>${row.map(cell => `<td>${cell ?? ''}</td>`).join('')}</tr>`).join('');
+  grid.innerHTML = `<table><thead>${header}</thead><tbody>${body}</tbody></table>`;
+}
+
+runBtn.addEventListener('click', async () => {
+  status.textContent = '';
+  const sql = sqlBox.value.trim();
+  const res = await fetch('/query/run', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sql })
+  });
+  const data = await res.json();
+  if (data.ok) {
+    lastResult = data;
+    renderGrid(data);
+    status.textContent = `Rows: ${data.row_count} (max 10000)`;
+  } else {
+    status.textContent = data.error;
+  }
+});
+
+copyBtn.addEventListener('click', async () => {
+  if (!lastResult || !lastResult.columns) return;
+  const rows = [lastResult.columns].concat(lastResult.rows);
+  const tsv = rows.map(row => row.map(cell => cell ?? '').join('\t')).join('\n');
+  await navigator.clipboard.writeText(tsv);
+  status.textContent = 'Copied to clipboard.';
+});
+
+refreshTablesBtn.addEventListener('click', fetchTables);
+
+fetchTables();
+
+connectBtn.click();
+</script>
+{% endblock %}
